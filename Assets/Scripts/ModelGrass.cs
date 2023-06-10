@@ -31,6 +31,12 @@ public class ModelGrass : MonoBehaviour {
 
     private int numInstancesPerChunk, chunkDimension, numThreadGroups, numVoteThreadGroups, numGroupScanThreadGroups, numWindThreadGroups, numGrassInitThreadGroups;
 
+    GrassChunk[] chunks;
+    uint[] args;
+    uint[] argsLOD;
+
+    Bounds fieldBounds;
+
     private struct GrassData {
         public Vector4 position;
         public Vector2 uv;
@@ -44,14 +50,46 @@ public class ModelGrass : MonoBehaviour {
         public ComputeBuffer culledPositionsBuffer;
         public Bounds bounds;
         public Material material;
+        private bool isDisabled;
+        public ModelGrass model;
+
+        public bool IsDisabled
+        {
+            set
+            {
+                if (value == isDisabled) return;
+                isDisabled = value;
+            }
+            get
+            {
+                return isDisabled;
+            }
+        }
+
+        public void FillChunk()
+        {
+            argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
+            argsBufferLOD = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
+
+            argsBuffer.SetData(model.args);
+            argsBufferLOD.SetData(model.argsLOD);
+
+            positionsBuffer = new ComputeBuffer(model.numInstancesPerChunk, SizeOf(typeof(GrassData)));
+            culledPositionsBuffer = new ComputeBuffer(model.numInstancesPerChunk, SizeOf(typeof(GrassData)));
+        }
+
+        public void FreeChunk()
+        {
+            positionsBuffer.Release();
+            positionsBuffer = null;
+            culledPositionsBuffer.Release();
+            culledPositionsBuffer = null;
+            argsBuffer.Release();
+            argsBuffer = null;
+            argsBufferLOD.Release();
+            argsBufferLOD = null;
+        }
     }
-
-    GrassChunk[] chunks;
-    uint[] args;
-    uint[] argsLOD;
-
-    Bounds fieldBounds;
-
 
 
     void OnEnable() {
@@ -121,27 +159,22 @@ public class ModelGrass : MonoBehaviour {
         }
     }
 
-    GrassChunk initializeGrassChunk(int xOffset, int yOffset) {
+    GrassChunk initializeGrassChunk(int xOffset, int yOffset)
+    {
         GrassChunk chunk = new GrassChunk();
+        chunk.model = this;
 
-        chunk.argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
-        chunk.argsBufferLOD = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
-
-        chunk.argsBuffer.SetData(args);
-        chunk.argsBufferLOD.SetData(argsLOD);
-
-        chunk.positionsBuffer = new ComputeBuffer(numInstancesPerChunk, SizeOf(typeof(GrassData)));
-        chunk.culledPositionsBuffer = new ComputeBuffer(numInstancesPerChunk, SizeOf(typeof(GrassData)));
+        chunk.FillChunk();
         int chunkDim = Mathf.CeilToInt(fieldSize / numChunks);
-        
+
         Vector3 c = new Vector3(0.0f, 0.0f, 0.0f);
-        
+
         c.y = 0.0f;
         c.x = -(chunkDim * 0.5f * numChunks) + chunkDim * xOffset;
         c.z = -(chunkDim * 0.5f * numChunks) + chunkDim * yOffset;
         c.x += chunkDim * 0.5f;
         c.z += chunkDim * 0.5f;
-        
+
         chunk.bounds = new Bounds(c, new Vector3(-chunkDim, 10.0f, chunkDim));
 
         initializeGrassShader.SetInt("_XOffset", xOffset);
@@ -159,6 +192,7 @@ public class ModelGrass : MonoBehaviour {
     }
 
     void CullGrass(GrassChunk chunk, Matrix4x4 VP, bool noLOD) {
+        if (chunk.IsDisabled) return;
         //Reset Args
         if (noLOD)
             chunk.argsBuffer.SetData(args);
@@ -204,25 +238,72 @@ public class ModelGrass : MonoBehaviour {
     }
 
     void Update() {
+        Plane[] frustumPlanes = GeometryUtility.CalculateFrustumPlanes(Camera.main);
+
         Matrix4x4 P = Camera.main.projectionMatrix;
         Matrix4x4 V = Camera.main.transform.worldToLocalMatrix;
         Matrix4x4 VP = P * V;
 
         GenerateWind();
 
-        for (int i = 0; i < numChunks * numChunks; ++i) {
-            float dist = Vector3.Distance(Camera.main.transform.position, chunks[i].bounds.center);
+        for (int i = 0; i < numChunks * numChunks; ++i)
+        {
+            bool isVisible = IsChunkVisible(frustumPlanes, chunks[i].bounds);
+            if (isVisible)
+            {
+                float dist = Vector3.Distance(Camera.main.transform.position, chunks[i].bounds.center);
+                bool noLOD = dist < lodCutoff;
+                CullGrass(chunks[i], VP, noLOD);
 
-            bool noLOD = dist < lodCutoff;
+                // Set isDisabled to false here instead of skipping the iteration
+                chunks[i].IsDisabled = false;
 
-            CullGrass(chunks[i], VP, noLOD);
-            if (noLOD)
-                Graphics.DrawMeshInstancedIndirect(grassMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBuffer);
+                if (noLOD)
+                    Graphics.DrawMeshInstancedIndirect(grassMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBuffer);
+                else
+                    Graphics.DrawMeshInstancedIndirect(grassLODMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBufferLOD);
+            }
             else
-                Graphics.DrawMeshInstancedIndirect(grassLODMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBufferLOD);
+            {
+                // Set isDisabled to true for chunks that are not visible
+                chunks[i].IsDisabled = true;
+            }
         }
     }
-    
+
+    bool IsChunkVisible(Plane[] frustumPlanes, Bounds bounds)
+    {
+        Vector3[] vertices = new Vector3[8];
+
+        // Get the corner vertices of the chunk's bounds
+        vertices[0] = bounds.center + new Vector3(bounds.extents.x, bounds.extents.y, bounds.extents.z);
+        vertices[1] = bounds.center + new Vector3(bounds.extents.x, bounds.extents.y, -bounds.extents.z);
+        vertices[2] = bounds.center + new Vector3(bounds.extents.x, -bounds.extents.y, bounds.extents.z);
+        vertices[3] = bounds.center + new Vector3(bounds.extents.x, -bounds.extents.y, -bounds.extents.z);
+        vertices[4] = bounds.center + new Vector3(-bounds.extents.x, bounds.extents.y, bounds.extents.z);
+        vertices[5] = bounds.center + new Vector3(-bounds.extents.x, bounds.extents.y, -bounds.extents.z);
+        vertices[6] = bounds.center + new Vector3(-bounds.extents.x, -bounds.extents.y, bounds.extents.z);
+        vertices[7] = bounds.center + new Vector3(-bounds.extents.x, -bounds.extents.y, -bounds.extents.z);
+
+        // Check if any of the vertices are inside the frustum
+        for (int i = 0; i < 6; i++)
+        {
+            bool allOutside = true;
+            for (int j = 0; j < 8; j++)
+            {
+                if (frustumPlanes[i].GetDistanceToPoint(vertices[j]) >= 0)
+                {
+                    allOutside = false;
+                    break;
+                }
+            }
+            if (allOutside)
+                return false; // Chunk is completely outside the frustum
+        }
+
+        return true; // Chunk is visible
+    }
+
     void OnDisable() {
         voteBuffer.Release();
         scanBuffer.Release();
@@ -237,27 +318,16 @@ public class ModelGrass : MonoBehaviour {
 
 
         for (int i = 0; i < numChunks * numChunks; ++i) {
-            FreeChunk(chunks[i]);
+            chunks[i].FreeChunk();
         }
 
         chunks = null;
     }
 
-    void FreeChunk(GrassChunk chunk) {
-        chunk.positionsBuffer.Release();
-        chunk.positionsBuffer = null;
-        chunk.culledPositionsBuffer.Release();
-        chunk.culledPositionsBuffer = null;
-        chunk.argsBuffer.Release();
-        chunk.argsBuffer = null;
-        chunk.argsBufferLOD.Release();
-        chunk.argsBufferLOD = null;
-    }
-
     void OnDrawGizmos() {
-        Gizmos.color = Color.yellow;
         if (chunks != null) {
             for (int i = 0; i < numChunks * numChunks; ++i) {
+                Gizmos.color = chunks[i].IsDisabled ? Color.red : Color.yellow;
                 Gizmos.DrawWireCube(chunks[i].bounds.center, chunks[i].bounds.size);
             }
         }
