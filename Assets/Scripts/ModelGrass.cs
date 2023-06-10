@@ -33,13 +33,12 @@ public class ModelGrass : MonoBehaviour {
 
     private struct GrassData {
         public Vector4 position;
-        public Vector2 uv;
-        public float displacement;
+        //public Vector2 uv;
+        //public float displacement;
     }
 
     private struct GrassChunk {
         public ComputeBuffer argsBuffer;
-        public ComputeBuffer argsBufferLOD;
         public ComputeBuffer positionsBuffer;
         public ComputeBuffer culledPositionsBuffer;
         public Bounds bounds;
@@ -48,7 +47,6 @@ public class ModelGrass : MonoBehaviour {
 
     GrassChunk[] chunks;
     uint[] args;
-    uint[] argsLOD;
 
     Bounds fieldBounds;
 
@@ -94,17 +92,12 @@ public class ModelGrass : MonoBehaviour {
         wind.Create();
         numWindThreadGroups = Mathf.CeilToInt(wind.height / 8.0f);
 
-        args = new uint[5] { 0, 0, 0, 0, 0 };
-        args[0] = (uint)grassMesh.GetIndexCount(0);
-        args[1] = (uint)0;
-        args[2] = (uint)grassMesh.GetIndexStart(0);
-        args[3] = (uint)grassMesh.GetBaseVertex(0);
 
-        argsLOD = new uint[5] { 0, 0, 0, 0, 0 };
-        argsLOD[0] = (uint)grassLODMesh.GetIndexCount(0);
-        argsLOD[1] = (uint)0;
-        argsLOD[2] = (uint)grassLODMesh.GetIndexStart(0);
-        argsLOD[3] = (uint)grassLODMesh.GetBaseVertex(0);
+        args = new uint[5] { 0, 0, 0, 0, 0 };
+        args[0] = (uint)grassLODMesh.GetIndexCount(0);
+        args[1] = (uint)0;
+        args[2] = (uint)grassLODMesh.GetIndexStart(0);
+        args[3] = (uint)grassLODMesh.GetBaseVertex(0);
 
         initializeChunks();
 
@@ -124,11 +117,9 @@ public class ModelGrass : MonoBehaviour {
     GrassChunk initializeGrassChunk(int xOffset, int yOffset) {
         GrassChunk chunk = new GrassChunk();
 
+      
         chunk.argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
-        chunk.argsBufferLOD = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
-
         chunk.argsBuffer.SetData(args);
-        chunk.argsBufferLOD.SetData(argsLOD);
 
         chunk.positionsBuffer = new ComputeBuffer(numInstancesPerChunk, SizeOf(typeof(GrassData)));
         chunk.culledPositionsBuffer = new ComputeBuffer(numInstancesPerChunk, SizeOf(typeof(GrassData)));
@@ -158,12 +149,9 @@ public class ModelGrass : MonoBehaviour {
         return chunk;
     }
 
-    void CullGrass(GrassChunk chunk, Matrix4x4 VP, bool noLOD) {
+    void CullGrass(GrassChunk chunk, Matrix4x4 VP) {
         //Reset Args
-        if (noLOD)
-            chunk.argsBuffer.SetData(args);
-        else
-            chunk.argsBufferLOD.SetData(argsLOD);
+        chunk.argsBuffer.SetData(args);
 
         // Vote
         cullGrassShader.SetMatrix("MATRIX_VP", VP);
@@ -189,7 +177,7 @@ public class ModelGrass : MonoBehaviour {
         cullGrassShader.SetBuffer(3, "_GrassDataBuffer", chunk.positionsBuffer);
         cullGrassShader.SetBuffer(3, "_VoteBuffer", voteBuffer);
         cullGrassShader.SetBuffer(3, "_ScanBuffer", scanBuffer);
-        cullGrassShader.SetBuffer(3, "_ArgsBuffer", noLOD ? chunk.argsBuffer : chunk.argsBufferLOD);
+        cullGrassShader.SetBuffer(3, "_ArgsBuffer", chunk.argsBuffer);
         cullGrassShader.SetBuffer(3, "_CulledGrassOutputBuffer", chunk.culledPositionsBuffer);
         cullGrassShader.SetBuffer(3, "_GroupSumArray", scannedGroupSumBuffer);
         cullGrassShader.Dispatch(3, numThreadGroups, 1, 1);
@@ -213,13 +201,9 @@ public class ModelGrass : MonoBehaviour {
         for (int i = 0; i < numChunks * numChunks; ++i) {
             float dist = Vector3.Distance(Camera.main.transform.position, chunks[i].bounds.center);
 
-            bool noLOD = dist < lodCutoff;
 
-            CullGrass(chunks[i], VP, noLOD);
-            if (noLOD)
-                Graphics.DrawMeshInstancedIndirect(grassMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBuffer);
-            else
-                Graphics.DrawMeshInstancedIndirect(grassLODMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBufferLOD);
+            CullGrass(chunks[i], VP);
+                Graphics.DrawMeshInstancedIndirect(grassLODMesh, 0, chunks[i].material, fieldBounds, chunks[i].argsBuffer);
         }
     }
     
@@ -250,8 +234,6 @@ public class ModelGrass : MonoBehaviour {
         chunk.culledPositionsBuffer = null;
         chunk.argsBuffer.Release();
         chunk.argsBuffer = null;
-        chunk.argsBufferLOD.Release();
-        chunk.argsBufferLOD = null;
     }
 
     void OnDrawGizmos() {
