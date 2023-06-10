@@ -24,6 +24,7 @@ Shader "Unlit/ModelGrass" {
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+			#pragma fragmentoption ARB_precision_hint_fastest
             
             #pragma target 4.5
 
@@ -46,8 +47,8 @@ Shader "Unlit/ModelGrass" {
 
             struct GrassData {
                 float4 position;
-                float2 uv;
-                float displacement;
+                //float2 uv;
+                //float displacement;
             };
 
             sampler2D _WindTex;
@@ -85,27 +86,33 @@ Shader "Unlit/ModelGrass" {
 
                 float4 localPosition = RotateAroundXInDegrees(v.vertex, 90.0f);
                 localPosition = RotateAroundYInDegrees(localPosition, idHash * 180.0f);
-                localPosition.y += _Scale * v.uv.y * v.uv.y * v.uv.y;
-                localPosition.xz += _Droop * lerp(0.5f, 1.0f, idHash) * (v.uv.y * v.uv.y * _Scale) * animationDirection;
+				
+				fixed uvs = v.uv.y;
+                localPosition.y += _Scale * uvs * uvs * uvs;
+                localPosition.xz += _Droop * lerp(0.5f, 1.0f, idHash) * (uvs * uvs * _Scale) * animationDirection;
                 
-                float4 worldUV = float4(positionBuffer[instanceID].uv, 0, 0);
+				
+				// хардкод: 100 -- размер поля, 2 == кол-во чанков
+				float2 uvZ = float2(grassPosition.xz + 100 * 0.5f * 2 * (1.0f / 2)) / 100;
+				
+				
+                float4 worldUV = float4(uvZ, 0, 0);
+				
                 
                 float swayVariance = lerp(0.8, 1.0, idHash);
-                float movement = v.uv.y * v.uv.y * (tex2Dlod(_WindTex, worldUV).r);
+                float movement = uvs * uvs * (tex2Dlod(_WindTex, worldUV).r);
                 movement *= swayVariance;
                 
                 localPosition.xz += movement;
-                
-                float4 worldPosition = float4(grassPosition.xyz + localPosition, 1.0f);
-
-                worldPosition.y -= positionBuffer[instanceID].displacement;
-                worldPosition.y *= 1.0f + positionBuffer[instanceID].position.w * lerp(0.8f, 1.0f, idHash);
-                worldPosition.y += positionBuffer[instanceID].displacement;
-                
+				
+				float cull = saturate(1 - grassPosition.y);
+                float4 worldPosition = float4(grassPosition.xyz + localPosition, 1.0f);				
+                worldPosition.y -= grassPosition.w;
+                 
                 o.vertex = UnityObjectToClipPos(worldPosition);
                 o.uv = v.uv;
                 o.noiseVal = tex2Dlod(_WindTex, worldUV).r;
-                o.worldPos = worldPosition;
+                o.worldPos = worldPosition.y;
                 o.chunkNum = float3(randValue(_ChunkNum * 20 + 1024), randValue(randValue(_ChunkNum) * 10 + 2048), randValue(_ChunkNum * 4 + 4096));
 
                 return o;
@@ -120,7 +127,8 @@ Shader "Unlit/ModelGrass" {
                 float4 tip = lerp(0.0f, _TipColor, i.uv.y * i.uv.y * (1.0f + _Scale));
                 //return fixed4(i.chunkNum, 1.0f);
                 //return i.noiseVal;
-
+				//return i.worldPos;
+				
                 float4 grassColor = (col + tip) * ndotl * ao;
 
                 /* Fog */
